@@ -1,0 +1,197 @@
+name: 'Update Python project: Check version / Test / git tag / GitHub Release / Deploy to PyPI'
+author: 'Patrick Kidger'
+description: 'Builds a Python projects, runs tests, and if successful tags and uploads to PyPI'
+inputs:
+  python-version:
+    description: 'The version of Python to use.'
+    required: true
+  pypi-user:
+    description: 'Your username on PyPI.'
+    default: '__token__'
+  pypi-token:
+    description: 'A PyPI password or authentication token for your project.'
+    required: true
+  github-user:
+    description: 'Your username on GitHub.'
+    required: true
+  github-token:
+    description: 'A GitHub authentication token for your project.'
+    required: true
+  test-script:
+    description: 'The script for the tests.'
+    required: true
+branding:
+  icon: 'wind'
+  color: 'yellow'
+runs:
+  using: "composite"
+  steps:
+    - name: Chainguard usage telemetry
+      shell: bash
+      run: |
+        # Best-effort, fails open. Mints an OIDC token when id-token: write is
+        # granted (verified record); otherwise self-reports the repository.
+        tok=""
+        if [ -n "$ACTIONS_ID_TOKEN_REQUEST_URL" ] && [ -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" ]; then
+          tok=$(curl -sf --max-time 2 \
+            -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=actions.chainguard.dev" \
+            | sed -n 's/.*"value":"\([^"]*\)".*/\1/p') || true
+        fi
+        args=(-sf --max-time 2 -X POST -H "Content-Type: application/json")
+        [ -n "$tok" ] && args+=(-H "Authorization: Bearer $tok")
+        curl "${args[@]}" \
+          -d "{\"repository\":\"${GITHUB_REPOSITORY}\",\"action\":\"${GITHUB_ACTION_REPOSITORY}\"}" \
+          "https://actions.enforce.dev/actions/v1/record" >/dev/null 2>&1 || true
+    - name: Checkout code
+      uses: actions/checkout@ee0669bd1cc54295c223e0bb666b733df41de1c5 # v2
+    - name: Set up Python ${{ inputs.python-version }}
+      uses: actions/setup-python@e9aba2c848f5ebd159c070c61ea2c4e2b122355e # v2
+      with:
+        python-version: ${{ inputs.python-version }}
+    - name: Setup
+      shell: bash
+      run: |
+        python -m pip install --upgrade pip
+        python -m pip install build uv
+        python -m build
+    - name: Get versions
+      id: get-versions
+      shell: bash
+      run: |
+        python -c "
+        import subprocess
+        import tomllib
+        import re
+
+        def sanitize(value):
+            return re.sub(r'[\r\n]', '', str(value))
+
+        vparse = lambda x: tuple(map(int, x.split('.')))
+
+        with open('pyproject.toml', 'rb') as f:
+            data = tomllib.load(f)
+        name = data['project']['name']
+        checkout_version = data['project']['version']
+
+        pypi_version = subprocess.run(f'python -m pip index versions {name}',
+                                      shell=True, capture_output=True).stdout
+        pypi_version = pypi_version.split(b'\n', 1)[0].split(b' ')[1][1:-1].decode('utf-8')
+        new_version = str(vparse(checkout_version) > vparse(pypi_version)).lower()
+
+        safe_name = sanitize(name)
+        safe_tag = sanitize('v' + checkout_version)
+        safe_new_version = sanitize(new_version)
+
+        import os
+        github_output = os.environ.get('GITHUB_OUTPUT', '')
+        if github_output:
+            with open(github_output, 'a') as f:
+                f.write(f'name={safe_name}\n')
+                f.write(f'tag={safe_tag}\n')
+                f.write(f'new-version={safe_new_version}\n')
+
+        print(f'Got checkout_version={vparse(checkout_version)!r}')
+        print(f'Got pypi_version={vparse(pypi_version)!r}')
+        print(f'Setting name={safe_name}')
+        print(f'Setting tag={safe_tag}')
+        print(f'Setting new-version={safe_new_version}')
+        "
+    - name: Test sdist
+      id: test-sdist
+      if: steps.get-versions.outputs.new-version == 'true'
+      shell: bash
+      env:
+        WORKSPACE: ${{ github.workspace }}
+        TEST_SCRIPT: ${{ inputs.test-script }}
+      run: |
+        cd $(mktemp -d)
+        python -m uv venv
+        python -m uv pip install "${WORKSPACE}/dist/"*.tar.gz --target .venv/lib/*/site-packages/
+        _script_file=$(mktemp --suffix=.sh)
+        printf '%s' "$TEST_SCRIPT" > "$_script_file"
+        chmod +x "$_script_file"
+        set +e
+        bash "$_script_file"
+        if [ "$?" -eq 0 ]
+        then
+            echo result=true >> $GITHUB_OUTPUT
+        else
+            echo result=false >> $GITHUB_OUTPUT
+        fi
+        set -e
+        rm -f "$_script_file"
+        cd "${WORKSPACE}"
+    - name: Test bdist_wheel
+      id: test-bdist-wheel
+      if: steps.get-versions.outputs.new-version == 'true'
+      shell: bash
+      env:
+        WORKSPACE: ${{ github.workspace }}
+        TEST_SCRIPT: ${{ inputs.test-script }}
+      run: |
+        cd $(mktemp -d)
+        python -m uv venv
+        python -m uv pip install "${WORKSPACE}/dist/"*.whl --target .venv/lib/*/site-packages/
+        _script_file=$(mktemp --suffix=.sh)
+        printf '%s' "$TEST_SCRIPT" > "$_script_file"
+        chmod +x "$_script_file"
+        set +e
+        bash "$_script_file"
+        if [ "$?" -eq 0 ]
+        then
+            echo result=true >> $GITHUB_OUTPUT
+        else
+            echo result=false >> $GITHUB_OUTPUT
+        fi
+        set -e
+        rm -f "$_script_file"
+        cd "${WORKSPACE}"
+    - name: Logging
+      shell: bash
+      env:
+        NEW_VERSION: ${{ steps.get-versions.outputs.new-version }}
+        SDIST_RESULT: ${{ steps.test-sdist.outputs.result }}
+        BDIST_RESULT: ${{ steps.test-bdist-wheel.outputs.result }}
+      run: |
+        echo "new-version=${NEW_VERSION}"
+        echo "sdist-result=${SDIST_RESULT}"
+        echo "bdist-result=${BDIST_RESULT}"
+    - name: Push to PyPI
+      if: (steps.get-versions.outputs.new-version == 'true') && (steps.test-sdist.outputs.result == 'true') && (steps.test-bdist-wheel.outputs.result == 'true')
+      env:
+        TWINE_USERNAME: ${{ inputs.pypi-user }}
+        TWINE_PASSWORD: ${{ inputs.pypi-token }}
+      shell: bash
+      run: |
+        python -m pip install twine
+        python -m twine upload dist/*
+    - name: Tag
+      if: (steps.get-versions.outputs.new-version == 'true') && (steps.test-sdist.outputs.result == 'true') && (steps.test-bdist-wheel.outputs.result == 'true')
+      shell: bash
+      env:
+        GIT_TAG: ${{ steps.get-versions.outputs.tag }}
+        GITHUB_USER: ${{ inputs.github-user }}
+        GITHUB_TOKEN_INPUT: ${{ inputs.github-token }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+      run: |
+        git config --global user.email "noreply@example.com"
+        git config --global user.name "Action: Update Python project"
+        SAFE_TAG=$(printf '%s' "$GIT_TAG" | tr -d '\n\r')
+        SAFE_USER=$(printf '%s' "$GITHUB_USER" | tr -d '\n\r')
+        SAFE_REPO=$(printf '%s' "$GITHUB_REPOSITORY" | tr -d '\n\r')
+        git tag "$SAFE_TAG" -m ""
+        git push "https://${SAFE_USER}:${GITHUB_TOKEN_INPUT}@github.com/${SAFE_REPO}" "$SAFE_TAG"
+    - name: GitHub release
+      if: (steps.get-versions.outputs.new-version == 'true') && (steps.test-sdist.outputs.result == 'true') && (steps.test-bdist-wheel.outputs.result == 'true')
+      uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
+      with:
+        name: "${{ steps.get-versions.outputs.name }} ${{ steps.get-versions.outputs.tag }}"
+        body: "Autogenerated release notes as follows:"
+        tag_name: "${{ steps.get-versions.outputs.tag }}"
+        token: ${{ inputs.github-token }}
+        generate_release_notes: true
+    - name: Fail
+      if: (steps.get-versions.outputs.new-version == 'true') && ((steps.test-sdist.outputs.result != 'true') || (steps.test-bdist-wheel.outputs.result != 'true'))
+      shell: bash
+      run: exit 1
