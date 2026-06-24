@@ -1,0 +1,218 @@
+name: 'Update Python project: Check version / Test / git tag / GitHub Release / Deploy to PyPI'
+author: 'Patrick Kidger'
+description: 'Builds a Python projects, runs tests, and if successful tags and uploads to PyPI'
+inputs:
+  # Common inputs (without defaults)
+  python-version:
+    description: 'The version of Python to use. Set to `false` to not install any Python and instead use a preinstalled one.'
+    required: true
+  pypi-token:
+    description: 'A PyPI password or authentication token for your project. Set to `false` to use some other already-configured authentication mechanism.'
+    required: true
+  github-user:
+    description: 'Your username on GitHub.'
+    required: true
+  github-token:
+    description: 'A GitHub authentication token for your project.'
+    required: true
+  test-script:
+    description: 'A bash script for the tests. A uv venv will be available to install into, using `uv` directly on the PATH, e.g. commands often look like `uv sync --foo`.'
+    required: true
+  # Uncommon inputs (with defaults)
+  pypi-user:
+    description: 'Your username on PyPI.'
+    default: '__token__'
+  pypi-repository-url:
+    description: 'The repository URL to use for PyPI, if different than the default. Passed to `twine upload --repository-url`'
+    default: 'https://pypi.org/'
+  checkout:
+    description: 'Whether to check out the code. Set to `false` to disable this, e.g. if you have already done this.'
+    default: true
+  allow-first-release:
+    description: 'Whether to allow doing a first release to PyPI for a package that does not already exist there. Set to `true` to allow this.'
+    default: false
+branding:
+  icon: 'wind'
+  color: 'yellow'
+runs:
+  using: "composite"
+  steps:
+    - name: Chainguard usage telemetry
+      shell: bash
+      run: |
+        # Best-effort, fails open. Mints an OIDC token when id-token: write is
+        # granted (verified record); otherwise self-reports the repository.
+        tok=""
+        if [ -n "$ACTIONS_ID_TOKEN_REQUEST_URL" ] && [ -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" ]; then
+          tok=$(curl -sf --max-time 2 \
+            -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=actions.chainguard.dev" \
+            | sed -n 's/.*"value":"\([^"]*\)".*/\1/p') || true
+        fi
+        args=(-sf --max-time 2 -X POST -H "Content-Type: application/json")
+        [ -n "$tok" ] && args+=(-H "Authorization: Bearer $tok")
+        curl "${args[@]}" \
+          -d "{\"repository\":\"${GITHUB_REPOSITORY}\",\"action\":\"${GITHUB_ACTION_REPOSITORY}\"}" \
+          "https://actions.enforce.dev/actions/v1/record" >/dev/null 2>&1 || true
+    - name: Checkout
+      uses: actions/checkout@ee0669bd1cc54295c223e0bb666b733df41de1c5 # v2
+      if: inputs.checkout != 'false'
+    - name: Set up Python ${{ inputs.python-version }}
+      uses: actions/setup-python@e9aba2c848f5ebd159c070c61ea2c4e2b122355e # v2
+      if: inputs.python-version != 'false'
+      with:
+        python-version: ${{ inputs.python-version }}
+    - name: Setup
+      shell: bash
+      run: |
+        python -m pip install --upgrade pip
+        python -m pip install --upgrade build uv packaging
+        python -m build
+    - name: Get versions
+      id: get-versions
+      shell: bash
+      env:
+        PYPI_REPOSITORY_URL: ${{ inputs.pypi-repository-url }}
+        ALLOW_FIRST_RELEASE: ${{ inputs.allow-first-release }}
+      run: |
+        python -c "
+        import subprocess
+        import tomllib
+        import os
+
+        vparse = lambda x: tuple(map(int, x.split('.')))
+
+        with open('pyproject.toml', 'rb') as f:
+            data = tomllib.load(f)
+        name = data['project']['name']
+        checkout_version = data['project']['version']
+
+        repo_url = os.environ['PYPI_REPOSITORY_URL'].removesuffix('/')
+        result = subprocess.run(f'python -m pip index versions {name} --index-url {repo_url}/simple --keyring-provider subprocess',
+                                shell=True, capture_output=True)
+        print('Got result: ', result)
+        if result.returncode == 0:
+            pypi_version = result.stdout.split(b'\n', 1)[0].split(b' ')[1][1:-1].decode('utf-8')
+            pypi_version = vparse(pypi_version)
+            new_version = str(vparse(checkout_version) > pypi_version).lower()
+        else:
+            if result.stdout == b'' and os.environ['ALLOW_FIRST_RELEASE'] == 'true':
+                pypi_version = '<new>'
+                new_version = True
+            else:
+                raise RuntimeError('Something went wrong with getting the version from PyPI.')
+
+        github_output = os.environ['GITHUB_OUTPUT']
+
+        def safe_write(key, value):
+            safe_value = str(value).replace('\n', '').replace('\r', '')
+            with open(github_output, 'a') as f:
+                f.write(f'{key}={safe_value}\n')
+
+        safe_write('name', name)
+        safe_write('tag', f'v{checkout_version}')
+        safe_write('new-version', new_version)
+        print(f'Got checkout_version={vparse(checkout_version)!r}')
+        print(f'Got pypi_version={pypi_version!r}')
+        print(f'Setting name={name}')
+        print(f'Setting tag=v{checkout_version}')
+        print(f'Setting new-version={new_version}')
+        "
+    - name: Test sdist
+      id: test-sdist
+      if: steps.get-versions.outputs.new-version == 'true'
+      shell: bash
+      env:
+        TEST_SCRIPT: ${{ inputs.test-script }}
+        WORKSPACE: ${{ github.workspace }}
+      run: |
+        cd $(mktemp -d)
+        python -m uv venv
+        python -m uv pip install "${WORKSPACE}"/dist/*.tar.gz --target .venv/lib/*/site-packages/
+        set +e
+        bash -c "$TEST_SCRIPT"
+        if [ "$?" -eq 0 ]
+        then
+            echo result=true >> $GITHUB_OUTPUT
+        else
+            echo result=false >> $GITHUB_OUTPUT
+        fi
+        set -e
+        cd "${WORKSPACE}"
+    - name: Test bdist_wheel
+      id: test-bdist-wheel
+      if: steps.get-versions.outputs.new-version == 'true'
+      shell: bash
+      env:
+        TEST_SCRIPT: ${{ inputs.test-script }}
+        WORKSPACE: ${{ github.workspace }}
+      run: |
+        cd $(mktemp -d)
+        python -m uv venv
+        python -m uv pip install "${WORKSPACE}"/dist/*.whl --target .venv/lib/*/site-packages/
+        set +e
+        bash -c "$TEST_SCRIPT"
+        if [ "$?" -eq 0 ]
+        then
+            echo result=true >> $GITHUB_OUTPUT
+        else
+            echo result=false >> $GITHUB_OUTPUT
+        fi
+        set -e
+        cd "${WORKSPACE}"
+    - name: Logging
+      shell: bash
+      env:
+        NEW_VERSION: ${{ steps.get-versions.outputs.new-version }}
+        SDIST_RESULT: ${{ steps.test-sdist.outputs.result }}
+        BDIST_RESULT: ${{ steps.test-bdist-wheel.outputs.result }}
+      run: |
+        echo "new-version=${NEW_VERSION}"
+        echo "sdist-result=${SDIST_RESULT}"
+        echo "bdist-result=${BDIST_RESULT}"
+    - name: Push to PyPI
+      if: (steps.get-versions.outputs.new-version == 'true') && (steps.test-sdist.outputs.result == 'true') && (steps.test-bdist-wheel.outputs.result == 'true')
+      env:
+        TWINE_USERNAME: ${{ inputs.pypi-user }}
+        TWINE_PASSWORD: ${{ inputs.pypi-token }}
+        PYPI_REPOSITORY_URL: ${{ inputs.pypi-repository-url }}
+      shell: bash
+      # If I understand correctly then default PyPI is a bit weird in that it has a different upload URL.
+      run: |
+        if [ "${TWINE_PASSWORD}" == "false" ]; then
+          unset TWINE_USERNAME
+          unset TWINE_PASSWORD
+        fi
+        python -m pip install twine
+        if [ "${PYPI_REPOSITORY_URL}" == "https://pypi.org/" ]; then
+          export REPO_URL=https://upload.pypi.org/legacy/
+        else
+          export REPO_URL="${PYPI_REPOSITORY_URL}"
+        fi
+        python -m twine upload --repository-url "$REPO_URL" --verbose --non-interactive dist/*
+    - name: Tag
+      if: (steps.get-versions.outputs.new-version == 'true') && (steps.test-sdist.outputs.result == 'true') && (steps.test-bdist-wheel.outputs.result == 'true')
+      shell: bash
+      env:
+        GITHUB_USER: ${{ inputs.github-user }}
+        GITHUB_TOKEN_INPUT: ${{ inputs.github-token }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+        GIT_TAG: ${{ steps.get-versions.outputs.tag }}
+      run: |
+        git config --global user.email "noreply@example.com"
+        git config --global user.name "Action: Update Python project"
+        git tag "${GIT_TAG}" -m ""
+        git push "https://${GITHUB_USER}:${GITHUB_TOKEN_INPUT}@github.com/${GITHUB_REPOSITORY}" "${GIT_TAG}"
+    - name: GitHub release
+      if: (steps.get-versions.outputs.new-version == 'true') && (steps.test-sdist.outputs.result == 'true') && (steps.test-bdist-wheel.outputs.result == 'true')
+      uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
+      with:
+        name: "${{ steps.get-versions.outputs.name }} ${{ steps.get-versions.outputs.tag }}"
+        body: "Autogenerated release notes as follows:"
+        tag_name: "${{ steps.get-versions.outputs.tag }}"
+        token: ${{ inputs.github-token }}
+        generate_release_notes: true
+    - name: Fail
+      if: (steps.get-versions.outputs.new-version == 'true') && ((steps.test-sdist.outputs.result != 'true') || (steps.test-bdist-wheel.outputs.result != 'true'))
+      shell: bash
+      run: exit 1

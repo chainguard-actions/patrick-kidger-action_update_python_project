@@ -1,0 +1,48 @@
+name: Test no new version (version already on PyPI)
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create minimal Python project
+        shell: bash
+        run: |
+          python3 -c "
+          content = '''[build-system]
+          requires = [\"setuptools>=61\"]
+          build-backend = \"setuptools.build_meta\"
+
+          [project]
+          name = \"requests\"
+          version = \"2.0.0\"
+          description = \"Test project\"
+          requires-python = \">=3.8\"
+
+          [tool.setuptools.packages.find]
+          where = [\"src\"]
+          '''
+          with open('pyproject.toml', 'w') as f:
+              f.write(content)
+          "
+          mkdir -p src/requests
+          touch src/requests/__init__.py
+
+      - name: Run action (no new version expected)
+        id: action
+        uses: .
+        with:
+          python-version: '3.11'
+          pypi-token: 'false'
+          github-user: 'test-user'
+          github-token: 'false'
+          test-script: 'echo "tests would run here"'
+          checkout: 'false'
+          allow-first-release: 'false'
+
+      - name: Assert action completed without error
+        run: |
+          echo "Action completed successfully (no new version to publish)"
+          echo "PASS"
