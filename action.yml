@@ -55,7 +55,7 @@ runs:
           -d "{\"repository\":\"${GITHUB_REPOSITORY}\",\"action\":\"${GITHUB_ACTION_REPOSITORY}\"}" \
           "https://actions.enforce.dev/actions/v1/record" >/dev/null 2>&1 || true
     - name: Checkout
-      uses: actions/checkout@ee0669bd1cc54295c223e0bb666b733df41de1c5 # v2
+      uses: actions/checkout@0717577d45739eb3c851188b29f50ed6c0b2194e # v2
       if: inputs.checkout != 'false'
     - name: Set up Python ${{ inputs.python-version }}
       uses: actions/setup-python@e9aba2c848f5ebd159c070c61ea2c4e2b122355e # v2
@@ -88,8 +88,8 @@ runs:
         checkout_version = data['project']['version']
 
         repo_url = os.environ['PYPI_REPOSITORY_URL'].removesuffix('/')
-        result = subprocess.run(f'python -m pip index versions {name} --index-url {repo_url}/simple --keyring-provider subprocess',
-                                shell=True, capture_output=True)
+        result = subprocess.run(['python', '-m', 'pip', 'index', 'versions', name, '--index-url', repo_url + '/simple', '--keyring-provider', 'subprocess'],
+                                shell=False, capture_output=True)
         print('Got result: ', result)
         if result.returncode == 0:
             pypi_version = result.stdout.split(b'\n', 1)[0].split(b' ')[1][1:-1].decode('utf-8')
@@ -101,17 +101,9 @@ runs:
                 new_version = True
             else:
                 raise RuntimeError('Something went wrong with getting the version from PyPI.')
-
-        github_output = os.environ['GITHUB_OUTPUT']
-
-        def safe_write(key, value):
-            safe_value = str(value).replace('\n', '').replace('\r', '')
-            with open(github_output, 'a') as f:
-                f.write(f'{key}={safe_value}\n')
-
-        safe_write('name', name)
-        safe_write('tag', f'v{checkout_version}')
-        safe_write('new-version', new_version)
+        subprocess.run(f'echo name={name} >> \$GITHUB_OUTPUT', shell=True)
+        subprocess.run(f'echo tag=v{checkout_version} >> \$GITHUB_OUTPUT', shell=True)
+        subprocess.run(f'echo new-version={new_version} >> \$GITHUB_OUTPUT', shell=True)
         print(f'Got checkout_version={vparse(checkout_version)!r}')
         print(f'Got pypi_version={pypi_version!r}')
         print(f'Setting name={name}')
@@ -123,43 +115,49 @@ runs:
       if: steps.get-versions.outputs.new-version == 'true'
       shell: bash
       env:
+        GITHUB_WORKSPACE_PATH: ${{ github.workspace }}
         TEST_SCRIPT: ${{ inputs.test-script }}
-        WORKSPACE: ${{ github.workspace }}
       run: |
         cd $(mktemp -d)
         python -m uv venv
-        python -m uv pip install "${WORKSPACE}"/dist/*.tar.gz --target .venv/lib/*/site-packages/
+        python -m uv pip install "${GITHUB_WORKSPACE_PATH}/dist/"*.tar.gz --target .venv/lib/*/site-packages/
         set +e
-        bash -c "$TEST_SCRIPT"
+        _script_file=$(mktemp --suffix=.sh)
+        printf '%s' "$TEST_SCRIPT" > "$_script_file"
+        bash "$_script_file"
         if [ "$?" -eq 0 ]
         then
             echo result=true >> $GITHUB_OUTPUT
         else
             echo result=false >> $GITHUB_OUTPUT
         fi
+        rm -f "$_script_file"
         set -e
-        cd "${WORKSPACE}"
+        cd "${GITHUB_WORKSPACE_PATH}"
     - name: Test bdist_wheel
       id: test-bdist-wheel
       if: steps.get-versions.outputs.new-version == 'true'
       shell: bash
       env:
+        GITHUB_WORKSPACE_PATH: ${{ github.workspace }}
         TEST_SCRIPT: ${{ inputs.test-script }}
-        WORKSPACE: ${{ github.workspace }}
       run: |
         cd $(mktemp -d)
         python -m uv venv
-        python -m uv pip install "${WORKSPACE}"/dist/*.whl --target .venv/lib/*/site-packages/
+        python -m uv pip install "${GITHUB_WORKSPACE_PATH}/dist/"*.whl --target .venv/lib/*/site-packages/
         set +e
-        bash -c "$TEST_SCRIPT"
+        _script_file=$(mktemp --suffix=.sh)
+        printf '%s' "$TEST_SCRIPT" > "$_script_file"
+        bash "$_script_file"
         if [ "$?" -eq 0 ]
         then
             echo result=true >> $GITHUB_OUTPUT
         else
             echo result=false >> $GITHUB_OUTPUT
         fi
+        rm -f "$_script_file"
         set -e
-        cd "${WORKSPACE}"
+        cd "${GITHUB_WORKSPACE_PATH}"
     - name: Logging
       shell: bash
       env:

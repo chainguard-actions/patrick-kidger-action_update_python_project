@@ -8,58 +8,43 @@
 
 **Test Policy SHA:** `843adf9e4b8f85d0c08b27b9d0b09dd094b54702`
 
-**Harden Agent Version:** `1`
+**Harden Agent Version:** `2`
 
-Action **patrick-kidger--action_update_python_project/v8** was hardened automatically. 11 finding(s) were identified and resolved across 1 iteration(s).
+Action **patrick-kidger--action_update_python_project/v8** was hardened automatically. 10 finding(s) were identified and resolved across 2 iteration(s).
 
 ## Findings Fixed
 
-### unpinned-uses (severity: high)
-
-Three action references in action.yml use mutable tag refs instead of pinned 40-character SHA digests, making the action vulnerable to supply-chain attacks if those tags are moved: `actions/checkout@v2`, `actions/setup-python@v2`, and `softprops/action-gh-release@v1`.
-
-Locations:
-
-- `action.yml:43`
-- `action.yml:46`
-- `action.yml:196`
-
 ### script-injection (severity: high)
 
-Multiple ${{ }} expressions are interpolated directly inside run: shell blocks (sub-rule a), bypassing shell quoting and enabling script injection:
-
-1. 'Get versions' step (line ~72): `${{ inputs.pypi-repository-url }}` and `${{ inputs.allow-first-release }}` are embedded as Python string literals inside the shell run block. An attacker-controlled value could break out of the Python string context.
-
-2. 'Test sdist' step (line ~84): `${{ inputs.test-script }}` is interpolated directly into `bash -c "${{ inputs.test-script }}"` — a critical arbitrary code execution vector since the entire test script is caller-supplied and injected verbatim into a bash -c invocation.
-
-3. 'Test bdist_wheel' step (line ~100): Same pattern — `${{ inputs.test-script }}` interpolated directly into `bash -c "${{ inputs.test-script }}"`.
-
-4. 'Test sdist' and 'Test bdist_wheel' steps: `${{ github.workspace }}` is interpolated unquoted in pip install and cd commands.
-
-5. 'Logging' step (line ~109): `${{ steps.get-versions.outputs.new-version }}`, `${{ steps.test-sdist.outputs.result }}`, `${{ steps.test-bdist-wheel.outputs.result }}` interpolated directly in echo commands.
-
-6. 'Push to PyPI' step (line ~120): `${{ inputs.pypi-repository-url }}` interpolated unquoted in `if [ ${{ inputs.pypi-repository-url }} == https://pypi.org/ ]` and `export REPO_URL=${{ inputs.pypi-repository-url }}`.
-
-7. 'Tag' step (line ~133): `${{ inputs.github-user }}`, `${{ inputs.github-token }}`, `${{ github.repository }}`, and `${{ steps.get-versions.outputs.tag }}` all interpolated directly in the git push URL.
+Multiple ${{ }} expressions are interpolated directly inside run: shell command strings throughout action.yml, violating sub-rule (a). The most critical instance is `${{ inputs.test-script }}` passed directly to `bash -c "..."` in both the 'Test sdist' and 'Test bdist_wheel' steps — this allows a caller to inject arbitrary shell commands. Additional direct interpolations include: `${{ inputs.pypi-repository-url }}` used unquoted in an `if [ ... ]` comparison and an `export` assignment (sub-rules a and b); `${{ inputs.github-user }}`, `${{ inputs.github-token }}`, and `${{ github.repository }}` interpolated directly into a `git push` URL; `${{ github.workspace }}` interpolated unquoted in pip install and cd commands; and `${{ steps.*.outputs.* }}` values interpolated directly into echo commands in the Logging step.
 
 Locations:
 
-- `action.yml:72`
-- `action.yml:84`
-- `action.yml:100`
-- `action.yml:109`
-- `action.yml:120`
-- `action.yml:133`
+- `action.yml:75`
+- `action.yml:80`
+- `action.yml:99`
+- `action.yml:101`
+- `action.yml:104`
+- `action.yml:112`
+- `action.yml:114`
+- `action.yml:117`
+- `action.yml:123`
+- `action.yml:124`
+- `action.yml:125`
+- `action.yml:139`
+- `action.yml:141`
+- `action.yml:147`
+- `action.yml:148`
 
-### github-env-injection (severity: high)
+### unpinned-uses (severity: high)
 
-The 'Get versions' step writes values to $GITHUB_OUTPUT via Python subprocess.run calls without newline sanitization. The inputs `${{ inputs.pypi-repository-url }}` and `${{ inputs.allow-first-release }}` are interpolated directly into the Python script string that also performs the GITHUB_OUTPUT writes — a malicious input containing newlines could inject additional key=value pairs into $GITHUB_OUTPUT. The `name` and `checkout_version` values written to $GITHUB_OUTPUT come from pyproject.toml but are also written without sanitization (e.g. `echo name={name} >> $GITHUB_OUTPUT`), and a compromised or attacker-influenced pyproject.toml could inject newlines. The downstream `${{ steps.get-versions.outputs.tag }}` value is then used unsanitized in the 'Tag' step's git push command.
+Three uses: references are pinned to mutable version tags instead of immutable 40-character SHA digests, making the action vulnerable to supply-chain attacks if those tags are moved: `actions/checkout@v2` (line 42), `actions/setup-python@v2` (line 45), and `softprops/action-gh-release@v1` (line 155). All three should be pinned to their full commit SHA.
 
 Locations:
 
-- `action.yml:72`
-- `action.yml:84`
-- `action.yml:100`
+- `action.yml:42`
+- `action.yml:45`
+- `action.yml:155`
 
 ### static-inline-injection (severity: high)
 
@@ -129,9 +114,34 @@ Locations:
 
 ### Iteration 1
 
-**Fixes applied:** unpinned-uses, script-injection, github-env-injection, static-inline-injection
+**Fixes applied:** unpinned-uses, script-injection, static-inline-injection
 
 **Notes:**
 
-Fixed all security findings in action.yml: (1) Pinned actions/checkout@v2 to SHA ee0669bd1cc54295c223e0bb666b733df41de1c5, actions/setup-python@v2 to SHA e9aba2c848f5ebd159c070c61ea2c4e2b122355e, and softprops/action-gh-release@v1 to SHA de2c0eb89ae2a093876385947365aca7b0e5f844. (2) Moved all ${{ inputs.pypi-repository-url }}, ${{ inputs.allow-first-release }}, ${{ inputs.test-script }}, ${{ github.workspace }}, ${{ inputs.github-user }}, ${{ inputs.github-token }}, ${{ github.repository }}, and ${{ steps.get-versions.outputs.* }} expressions from run: blocks into env: blocks, referencing them as plain environment variables in shell scripts. (3) Replaced subprocess.run shell echo commands for GITHUB_OUTPUT with a Python safe_write() function that strips newlines/carriage returns before writing, preventing newline injection attacks. (4) Fixed the Push to PyPI step to use ${PYPI_REPOSITORY_URL} env var instead of inline ${{ inputs.pypi-repository-url }}. (5) Fixed the Tag step to use env vars for all GitHub context values including credentials.
+Fixed all security findings in hardened/action/action.yml:
+
+1. **unpinned-uses**: Pinned all three mutable tag references to full 40-character commit SHAs:
+   - actions/checkout@v2 → @0717577d45739eb3c851188b29f50ed6c0b2194e # v2
+   - actions/setup-python@v2 → @e9aba2c848f5ebd159c070c61ea2c4e2b122355e # v2
+   - softprops/action-gh-release@v1 → @de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
+
+2. **script-injection / static-inline-injection**: Moved all ${{ }} expressions out of run: shell strings into env: maps for every affected step:
+   - Get versions: PYPI_REPOSITORY_URL (${{ inputs.pypi-repository-url }}) and ALLOW_FIRST_RELEASE (${{ inputs.allow-first-release }}); Python code updated to use os.environ instead
+   - Test sdist: GITHUB_WORKSPACE_PATH (${{ github.workspace }}) and TEST_SCRIPT (${{ inputs.test-script }})
+   - Test bdist_wheel: GITHUB_WORKSPACE_PATH (${{ github.workspace }}) and TEST_SCRIPT (${{ inputs.test-script }})
+   - Logging: NEW_VERSION, SDIST_RESULT, BDIST_RESULT (all step outputs)
+   - Push to PyPI: PYPI_REPOSITORY_URL (${{ inputs.pypi-repository-url }}); comparison and assignment now use the env var
+   - Tag: GITHUB_USER, GITHUB_TOKEN_INPUT, GITHUB_REPOSITORY, GIT_TAG; git push URL now uses env vars
+
+### Iteration 2
+
+**Fixes applied:** script-injection
+
+**Notes:**
+
+Fixed two script-injection findings in hardened/action/action.yml:
+
+1. 'Get versions' step: Changed subprocess.run() from shell=True with an f-string that interpolated repo_url (from inputs.pypi-repository-url) to shell=False with a list of arguments. This ensures the URL value is passed as a literal argument to pip and cannot inject shell commands via metacharacters.
+
+2. 'Test sdist' and 'Test bdist_wheel' steps: Replaced `bash -c "$TEST_SCRIPT"` with writing the script content to a temp file via `printf '%s' "$TEST_SCRIPT" > "$_script_file"` and executing `bash "$_script_file"`. This prevents the test-script content from being parsed as a shell -c argument string, while still allowing the script to run normally as a bash script file.
 

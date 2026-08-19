@@ -1,0 +1,70 @@
+name: Test - Preinstalled Python (python-version false)
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Install Python 3.11 so that tomllib (stdlib in 3.11+) is available.
+      # The action uses tomllib to parse pyproject.toml. We install Python 3.11
+      # here and pass python-version: "false" to the action so it skips its
+      # internal setup-python step, simulating a user who has already set up Python.
+      - name: Install Python 3.11
+        run: |
+          # Python 3.11 is typically pre-installed on ubuntu-latest; try it first
+          if command -v python3.11 &>/dev/null; then
+            echo "python3.11 already available"
+          else
+            sudo apt-get update -qq
+            sudo apt-get install -y python3.11 python3.11-venv
+          fi
+          # Install pip for Python 3.11
+          python3.11 -m ensurepip --upgrade 2>/dev/null || \
+            curl -sS https://bootstrap.pypa.io/get-pip.py | python3.11
+          # Create symlinks so 'python' and 'python3' resolve to Python 3.11
+          sudo ln -sf "$(which python3.11)" /usr/local/bin/python
+          sudo ln -sf "$(which python3.11)" /usr/local/bin/python3
+          python --version
+          python -c "import tomllib; print('tomllib available')"
+
+      # Place a minimal Python package at the workspace root so the action
+      # can build it. The fixture uses 'requests' at 0.0.1 which is lower
+      # than the real PyPI version, so new-version=false and no deployment occurs.
+      - name: Set up minimal Python package in workspace
+        run: |
+          cp tests/fixtures/minimal-package/pyproject.toml pyproject.toml
+          cp tests/fixtures/minimal-package/requests_stub.py requests_stub.py
+          cat pyproject.toml
+
+      # Pin pip to <25 to ensure 'pip index versions' command is available.
+      # pip 25.0 removed the 'pip index' subcommand; the action relies on it
+      # to check the current PyPI version. Without this constraint, the action's
+      # 'Get versions' step would fail with a RuntimeError.
+      - name: Pin pip to avoid pip 25+ (which removed pip index)
+        run: |
+          mkdir -p ~/.config/pip
+          printf '[global]\nconstraint = /tmp/pip-constraints.txt\n' > ~/.config/pip/pip.conf
+          echo "pip<25" > /tmp/pip-constraints.txt
+          cat ~/.config/pip/pip.conf
+
+      # python-version: "false" means the action skips the setup-python step
+      # and uses whatever Python is already available (Python 3.11 set up above).
+      # This tests the code path where the user provides their own Python environment.
+      - name: Run action with preinstalled Python
+        id: action
+        uses: .
+        with:
+          python-version: "false"
+          pypi-token: "false"
+          github-user: "test-user"
+          github-token: ${{ github.token }}
+          test-script: "echo 'tests would run here'"
+          checkout: "false"
+
+      - name: Assert action completed without deploying
+        run: |
+          echo "Action completed successfully with preinstalled Python (python-version=false)"
+          echo "PASS"

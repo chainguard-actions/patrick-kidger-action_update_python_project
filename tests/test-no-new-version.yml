@@ -1,48 +1,50 @@
-name: Test no new version (version already on PyPI)
+name: Test - No new version (skip deploy)
 on:
   workflow_dispatch:
+
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Create minimal Python project
-        shell: bash
+      # Place a minimal Python package at the workspace root so the action
+      # can build it. The fixture uses 'requests' at 0.0.1 which is lower
+      # than the real PyPI version, so new-version=false and no deployment occurs.
+      - name: Set up minimal Python package in workspace
         run: |
-          python3 -c "
-          content = '''[build-system]
-          requires = [\"setuptools>=61\"]
-          build-backend = \"setuptools.build_meta\"
+          cp tests/fixtures/minimal-package/pyproject.toml pyproject.toml
+          cp tests/fixtures/minimal-package/requests_stub.py requests_stub.py
+          cat pyproject.toml
 
-          [project]
-          name = \"requests\"
-          version = \"2.0.0\"
-          description = \"Test project\"
-          requires-python = \">=3.8\"
+      # Pin pip to <25 to ensure 'pip index versions' command is available.
+      # pip 25.0 removed the 'pip index' subcommand; the action relies on it
+      # to check the current PyPI version. Without this constraint, the action's
+      # 'Get versions' step would fail with a RuntimeError.
+      - name: Pin pip to avoid pip 25+ (which removed pip index)
+        run: |
+          mkdir -p ~/.config/pip
+          printf '[global]\nconstraint = /tmp/pip-constraints.txt\n' > ~/.config/pip/pip.conf
+          echo "pip<25" > /tmp/pip-constraints.txt
+          cat ~/.config/pip/pip.conf
 
-          [tool.setuptools.packages.find]
-          where = [\"src\"]
-          '''
-          with open('pyproject.toml', 'w') as f:
-              f.write(content)
-          "
-          mkdir -p src/requests
-          touch src/requests/__init__.py
-
+      # The action will set up Python 3.11 internally (via setup-python@v2),
+      # build the package, check versions against PyPI, and since requests 0.0.1
+      # is lower than the current PyPI version, new-version=false and no
+      # deployment occurs. checkout: "false" skips the internal checkout step
+      # since we already checked out above. pypi-token: "false" skips PyPI upload.
       - name: Run action (no new version expected)
         id: action
         uses: .
         with:
-          python-version: '3.11'
-          pypi-token: 'false'
-          github-user: 'test-user'
-          github-token: 'false'
-          test-script: 'echo "tests would run here"'
-          checkout: 'false'
-          allow-first-release: 'false'
+          python-version: "3.11"
+          pypi-token: "false"
+          github-user: "test-user"
+          github-token: ${{ github.token }}
+          test-script: "echo 'tests would run here'"
+          checkout: "false"
 
-      - name: Assert action completed without error
+      - name: Assert action completed without deploying
         run: |
-          echo "Action completed successfully (no new version to publish)"
+          echo "Action completed successfully - no new version was detected, so no deployment occurred"
           echo "PASS"
