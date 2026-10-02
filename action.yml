@@ -88,23 +88,20 @@ runs:
       if: steps.get-versions.outputs.new-version == 'true'
       env:
         GITHUB_WORKSPACE_PATH: ${{ github.workspace }}
-        TEST_SCRIPT: ${{ inputs.test-script }}
+        INPUT_TEST_SCRIPT: ${{ inputs.test-script }}
       shell: bash
       run: |
         cd $(mktemp -d)
         python -m uv venv
         python -m uv pip install "$GITHUB_WORKSPACE_PATH"/dist/*.tar.gz --target .venv/lib/*/site-packages/
         set +e
-        _test_script_file=$(mktemp --suffix=.sh)
-        printf '%s' "$TEST_SCRIPT" > "$_test_script_file"
-        bash "$_test_script_file"
+        bash -c "$INPUT_TEST_SCRIPT"
         if [ "$?" -eq 0 ]
         then
             echo result=true >> $GITHUB_OUTPUT
         else
             echo result=false >> $GITHUB_OUTPUT
         fi
-        rm -f "$_test_script_file"
         set -e
         cd "$GITHUB_WORKSPACE_PATH"
     - name: Test bdist_wheel
@@ -112,23 +109,20 @@ runs:
       if: steps.get-versions.outputs.new-version == 'true'
       env:
         GITHUB_WORKSPACE_PATH: ${{ github.workspace }}
-        TEST_SCRIPT: ${{ inputs.test-script }}
+        INPUT_TEST_SCRIPT: ${{ inputs.test-script }}
       shell: bash
       run: |
         cd $(mktemp -d)
         python -m uv venv
         python -m uv pip install "$GITHUB_WORKSPACE_PATH"/dist/*.whl --target .venv/lib/*/site-packages/
         set +e
-        _test_script_file=$(mktemp --suffix=.sh)
-        printf '%s' "$TEST_SCRIPT" > "$_test_script_file"
-        bash "$_test_script_file"
+        bash -c "$INPUT_TEST_SCRIPT"
         if [ "$?" -eq 0 ]
         then
             echo result=true >> $GITHUB_OUTPUT
         else
             echo result=false >> $GITHUB_OUTPUT
         fi
-        rm -f "$_test_script_file"
         set -e
         cd "$GITHUB_WORKSPACE_PATH"
     - name: Logging
@@ -153,16 +147,16 @@ runs:
     - name: Tag
       if: (steps.get-versions.outputs.new-version == 'true') && (steps.test-sdist.outputs.result == 'true') && (steps.test-bdist-wheel.outputs.result == 'true')
       env:
-        GIT_TAG: ${{ steps.get-versions.outputs.tag }}
         GITHUB_USER: ${{ inputs.github-user }}
         GITHUB_TOKEN_VALUE: ${{ inputs.github-token }}
-        GITHUB_REPOSITORY_NAME: ${{ github.repository }}
+        GITHUB_REPOSITORY_VALUE: ${{ github.repository }}
+        GIT_TAG: ${{ steps.get-versions.outputs.tag }}
       shell: bash
       run: |
         git config --global user.email "noreply@example.com"
         git config --global user.name "Action: Update Python project"
         git tag "$GIT_TAG" -m ""
-        git push "https://${GITHUB_USER}:${GITHUB_TOKEN_VALUE}@github.com/${GITHUB_REPOSITORY_NAME}" "$GIT_TAG"
+        git push "https://${GITHUB_USER}:${GITHUB_TOKEN_VALUE}@github.com/${GITHUB_REPOSITORY_VALUE}" "$GIT_TAG"
     - name: GitHub release
       if: (steps.get-versions.outputs.new-version == 'true') && (steps.test-sdist.outputs.result == 'true') && (steps.test-bdist-wheel.outputs.result == 'true')
       uses: chainguard-actions/softprops-action-gh-release@008d986dff0405b1fa98d7b5ccaa8361e486972a # v1

@@ -10,37 +10,37 @@
 
 **Harden Agent Version:** `2`
 
-Action **patrick-kidger--action_update_python_project/v7** was hardened automatically. 6 finding(s) were identified and resolved across 2 iteration(s).
+Action **patrick-kidger--action_update_python_project/v7** was hardened automatically. 6 finding(s) were identified and resolved across 1 iteration(s).
 
 ## Findings Fixed
 
 ### script-injection (severity: high)
 
-Multiple ${{ }} expressions are directly interpolated inside run: shell command strings, violating rule (a). The most critical instance is in the 'Test sdist' and 'Test bdist_wheel' steps where `${{ inputs.test-script }}` is passed directly to `bash -c "..."`, allowing any caller to inject arbitrary shell commands. Additionally, `${{ github.workspace }}` is interpolated unquoted in pip install commands, `${{ inputs.github-user }}`, `${{ inputs.github-token }}`, and `${{ github.repository }}` are interpolated directly into a git push URL in the 'Tag' step, and `${{ steps.get-versions.outputs.new-version }}`, `${{ steps.test-sdist.outputs.result }}`, and `${{ steps.test-bdist-wheel.outputs.result }}` are interpolated unquoted in the 'Logging' step echo commands.
+Multiple `run:` blocks in action.yml directly interpolate `${{ ... }}` expressions into shell commands (sub-rule a). The most critical instance is `${{ inputs.test-script }}` interpolated directly inside `bash -c "..."` — this allows the calling workflow to inject arbitrary shell commands. Additional violations include `${{ github.workspace }}` used unquoted in pip install URLs and `cd` commands, `${{ inputs.github-user }}`, `${{ inputs.github-token }}`, and `${{ github.repository }}` embedded in a `git push` URL, and `${{ steps.get-versions.outputs.* }}` values echoed directly in the Logging step. All of these bypass shell quoting and allow metacharacter injection. Fix: move all expression values into `env:` variables and reference them as double-quoted shell variables (e.g. `"$ENV_VAR"`).
 
 Locations:
 
-- `action.yml:68`
-- `action.yml:71`
+- `action.yml:70`
+- `action.yml:72`
 - `action.yml:76`
-- `action.yml:84`
-- `action.yml:87`
-- `action.yml:92`
+- `action.yml:83`
+- `action.yml:85`
+- `action.yml:91`
+- `action.yml:95`
+- `action.yml:96`
 - `action.yml:97`
-- `action.yml:98`
-- `action.yml:99`
+- `action.yml:108`
 - `action.yml:109`
-- `action.yml:110`
 
 ### unpinned-uses (severity: high)
 
-Three `uses:` references are pinned to mutable version tags rather than immutable 40-character commit SHAs, making the action vulnerable to supply-chain attacks if those tags are moved or compromised: `actions/checkout@v2`, `actions/setup-python@v2`, and `softprops/action-gh-release@v1`.
+Three `uses:` references are pinned to mutable tags rather than immutable 40-character commit SHAs, making the action vulnerable to supply-chain attacks if those tags are moved or the upstream repositories are compromised: `actions/checkout@v2` (line 27), `actions/setup-python@v2` (line 30), and `softprops/action-gh-release@v1` (line 113). Each should be replaced with a full SHA pin, e.g. `actions/checkout@<40-char-sha> # v2`.
 
 Locations:
 
-- `action.yml:28`
-- `action.yml:31`
-- `action.yml:117`
+- `action.yml:27`
+- `action.yml:30`
+- `action.yml:113`
 
 ### static-inline-injection (severity: high)
 
@@ -82,20 +82,18 @@ Locations:
 
 **Notes:**
 
-Fixed all findings in action.yml:
+Fixed all security findings in hardened/action/action.yml:
 
-1. **unpinned-uses**: Pinned all three `uses:` references to full 40-character commit SHAs with tag comments: `actions/checkout@v2` → SHA `0717577d...`, `actions/setup-python@v2` → SHA `e9aba2c8...`, `softprops/action-gh-release@v1` → SHA `de2c0eb8...`.
+1. **unpinned-uses**: Pinned all three `uses:` references to immutable commit SHAs:
+   - `actions/checkout@v2` → `@0717577d45739eb3c851188b29f50ed6c0b2194e # v2`
+   - `actions/setup-python@v2` → `@e9aba2c848f5ebd159c070c61ea2c4e2b122355e # v2`
+   - `softprops/action-gh-release@v1` → `@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1`
 
-2. **script-injection / static-inline-injection**: Moved all `${{ }}` expressions out of `run:` shell strings into `env:` blocks:
-   - `Test sdist` and `Test bdist_wheel` steps: `${{ github.workspace }}` → `GITHUB_WORKSPACE_PATH`, `${{ inputs.test-script }}` → `TEST_SCRIPT` (used as `bash -c "$TEST_SCRIPT"` — still passes the script as a single argument to bash -c, preventing word-splitting injection)
-   - `Logging` step: step outputs moved to `NEW_VERSION`, `SDIST_RESULT`, `BDIST_RESULT` env vars
-   - `Tag` step: `${{ inputs.github-user }}`, `${{ inputs.github-token }}`, `${{ github.repository }}`, and `${{ steps.get-versions.outputs.tag }}` moved to `GITHUB_USER`, `GITHUB_TOKEN_VALUE`, `GITHUB_REPOSITORY_NAME`, `GIT_TAG` env vars, used with proper quoting in the git push URL.
+2. **script-injection / static-inline-injection**: Moved all `${{ ... }}` expressions from `run:` blocks into `env:` maps and referenced them as double-quoted shell variables:
+   - **Test sdist**: `${{ github.workspace }}` → `GITHUB_WORKSPACE_PATH`, `${{ inputs.test-script }}` → `INPUT_TEST_SCRIPT`
+   - **Test bdist_wheel**: same as above
+   - **Logging**: `${{ steps.get-versions.outputs.new-version }}` → `NEW_VERSION`, etc.
+   - **Tag**: `${{ inputs.github-user }}` → `GITHUB_USER`, `${{ inputs.github-token }}` → `GITHUB_TOKEN_VALUE`, `${{ github.repository }}` → `GITHUB_REPOSITORY_VALUE`, `${{ steps.get-versions.outputs.tag }}` → `GIT_TAG`
 
-### Iteration 2
-
-**Fixes applied:** script-injection
-
-**Notes:**
-
-Fixed script-injection in both 'Test sdist' (line 75) and 'Test bdist_wheel' (line 95) steps. Replaced `bash -c "$TEST_SCRIPT"` with writing the TEST_SCRIPT env var to a temporary file via `printf '%s' "$TEST_SCRIPT" > "$_test_script_file"` and executing it with `bash "$_test_script_file"`. This eliminates the bash -c injection vector where the entire variable value was interpreted as arbitrary shell commands. The temp file is removed after execution.
+All shell variables are properly double-quoted in the run: scripts.
 
