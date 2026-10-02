@@ -79,6 +79,7 @@ runs:
         import subprocess
         import tomllib
         import os
+        import re
 
         vparse = lambda x: tuple(map(int, x.split('.')))
 
@@ -87,9 +88,19 @@ runs:
         name = data['project']['name']
         checkout_version = data['project']['version']
 
+        # Validate name and version to prevent injection into GITHUB_OUTPUT
+        if not re.match(r'^[A-Za-z0-9._-]+$', name):
+            raise ValueError(f'Package name contains unexpected characters: {name!r}')
+        if not re.match(r'^[0-9][A-Za-z0-9._-]*$', checkout_version):
+            raise ValueError(f'Package version contains unexpected characters: {checkout_version!r}')
+
         repo_url = os.environ['PYPI_REPOSITORY_URL'].removesuffix('/')
-        result = subprocess.run(['python', '-m', 'pip', 'index', 'versions', name, '--index-url', repo_url + '/simple', '--keyring-provider', 'subprocess'],
-                                shell=False, capture_output=True)
+        # Use a list of arguments to avoid shell=True injection
+        result = subprocess.run(
+            ['python', '-m', 'pip', 'index', 'versions', name,
+             '--index-url', repo_url + '/simple',
+             '--keyring-provider', 'subprocess'],
+            shell=False, capture_output=True)
         print('Got result: ', result)
         if result.returncode == 0:
             pypi_version = result.stdout.split(b'\n', 1)[0].split(b' ')[1][1:-1].decode('utf-8')
@@ -101,9 +112,11 @@ runs:
                 new_version = True
             else:
                 raise RuntimeError('Something went wrong with getting the version from PyPI.')
-        subprocess.run(f'echo name={name} >> \$GITHUB_OUTPUT', shell=True)
-        subprocess.run(f'echo tag=v{checkout_version} >> \$GITHUB_OUTPUT', shell=True)
-        subprocess.run(f'echo new-version={new_version} >> \$GITHUB_OUTPUT', shell=True)
+        github_output = os.environ['GITHUB_OUTPUT']
+        with open(github_output, 'a') as f:
+            f.write(f'name={name}\n')
+            f.write(f'tag=v{checkout_version}\n')
+            f.write(f'new-version={new_version}\n')
         print(f'Got checkout_version={vparse(checkout_version)!r}')
         print(f'Got pypi_version={pypi_version!r}')
         print(f'Setting name={name}')
@@ -115,49 +128,49 @@ runs:
       if: steps.get-versions.outputs.new-version == 'true'
       shell: bash
       env:
-        GITHUB_WORKSPACE_PATH: ${{ github.workspace }}
         TEST_SCRIPT: ${{ inputs.test-script }}
+        WORKSPACE: ${{ github.workspace }}
       run: |
         cd $(mktemp -d)
         python -m uv venv
-        python -m uv pip install "${GITHUB_WORKSPACE_PATH}/dist/"*.tar.gz --target .venv/lib/*/site-packages/
+        python -m uv pip install "$WORKSPACE"/dist/*.tar.gz --target .venv/lib/*/site-packages/
         set +e
-        _script_file=$(mktemp --suffix=.sh)
-        printf '%s' "$TEST_SCRIPT" > "$_script_file"
-        bash "$_script_file"
+        _test_script_file=$(mktemp --suffix=.sh)
+        printf '%s' "$TEST_SCRIPT" > "$_test_script_file"
+        bash "$_test_script_file"
         if [ "$?" -eq 0 ]
         then
             echo result=true >> $GITHUB_OUTPUT
         else
             echo result=false >> $GITHUB_OUTPUT
         fi
-        rm -f "$_script_file"
+        rm -f "$_test_script_file"
         set -e
-        cd "${GITHUB_WORKSPACE_PATH}"
+        cd "$WORKSPACE"
     - name: Test bdist_wheel
       id: test-bdist-wheel
       if: steps.get-versions.outputs.new-version == 'true'
       shell: bash
       env:
-        GITHUB_WORKSPACE_PATH: ${{ github.workspace }}
         TEST_SCRIPT: ${{ inputs.test-script }}
+        WORKSPACE: ${{ github.workspace }}
       run: |
         cd $(mktemp -d)
         python -m uv venv
-        python -m uv pip install "${GITHUB_WORKSPACE_PATH}/dist/"*.whl --target .venv/lib/*/site-packages/
+        python -m uv pip install "$WORKSPACE"/dist/*.whl --target .venv/lib/*/site-packages/
         set +e
-        _script_file=$(mktemp --suffix=.sh)
-        printf '%s' "$TEST_SCRIPT" > "$_script_file"
-        bash "$_script_file"
+        _test_script_file=$(mktemp --suffix=.sh)
+        printf '%s' "$TEST_SCRIPT" > "$_test_script_file"
+        bash "$_test_script_file"
         if [ "$?" -eq 0 ]
         then
             echo result=true >> $GITHUB_OUTPUT
         else
             echo result=false >> $GITHUB_OUTPUT
         fi
-        rm -f "$_script_file"
+        rm -f "$_test_script_file"
         set -e
-        cd "${GITHUB_WORKSPACE_PATH}"
+        cd "$WORKSPACE"
     - name: Logging
       shell: bash
       env:
@@ -165,9 +178,9 @@ runs:
         SDIST_RESULT: ${{ steps.test-sdist.outputs.result }}
         BDIST_RESULT: ${{ steps.test-bdist-wheel.outputs.result }}
       run: |
-        echo "new-version=${NEW_VERSION}"
-        echo "sdist-result=${SDIST_RESULT}"
-        echo "bdist-result=${BDIST_RESULT}"
+        echo new-version="$NEW_VERSION"
+        echo sdist-result="$SDIST_RESULT"
+        echo bdist-result="$BDIST_RESULT"
     - name: Push to PyPI
       if: (steps.get-versions.outputs.new-version == 'true') && (steps.test-sdist.outputs.result == 'true') && (steps.test-bdist-wheel.outputs.result == 'true')
       env:
@@ -182,10 +195,10 @@ runs:
           unset TWINE_PASSWORD
         fi
         python -m pip install twine
-        if [ "${PYPI_REPOSITORY_URL}" == "https://pypi.org/" ]; then
+        if [ "$PYPI_REPOSITORY_URL" == "https://pypi.org/" ]; then
           export REPO_URL=https://upload.pypi.org/legacy/
         else
-          export REPO_URL="${PYPI_REPOSITORY_URL}"
+          export REPO_URL="$PYPI_REPOSITORY_URL"
         fi
         python -m twine upload --repository-url "$REPO_URL" --verbose --non-interactive dist/*
     - name: Tag
@@ -199,8 +212,8 @@ runs:
       run: |
         git config --global user.email "noreply@example.com"
         git config --global user.name "Action: Update Python project"
-        git tag "${GIT_TAG}" -m ""
-        git push "https://${GITHUB_USER}:${GITHUB_TOKEN_INPUT}@github.com/${GITHUB_REPOSITORY}" "${GIT_TAG}"
+        git tag "$GIT_TAG" -m ""
+        git push "https://${GITHUB_USER}:${GITHUB_TOKEN_INPUT}@github.com/${GITHUB_REPOSITORY}" "$GIT_TAG"
     - name: GitHub release
       if: (steps.get-versions.outputs.new-version == 'true') && (steps.test-sdist.outputs.result == 'true') && (steps.test-bdist-wheel.outputs.result == 'true')
       uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
