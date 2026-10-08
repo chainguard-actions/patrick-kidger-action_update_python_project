@@ -72,14 +72,13 @@ runs:
       id: get-versions
       shell: bash
       env:
-        PYPI_REPOSITORY_URL: ${{ inputs.pypi-repository-url }}
-        ALLOW_FIRST_RELEASE: ${{ inputs.allow-first-release }}
+        INPUT_PYPI_REPOSITORY_URL: ${{ inputs.pypi-repository-url }}
+        INPUT_ALLOW_FIRST_RELEASE: ${{ inputs.allow-first-release }}
       run: |
         python -c "
         import subprocess
         import tomllib
         import os
-        import re
 
         vparse = lambda x: tuple(map(int, x.split('.')))
 
@@ -88,35 +87,23 @@ runs:
         name = data['project']['name']
         checkout_version = data['project']['version']
 
-        # Validate name and version to prevent injection into GITHUB_OUTPUT
-        if not re.match(r'^[A-Za-z0-9._-]+$', name):
-            raise ValueError(f'Package name contains unexpected characters: {name!r}')
-        if not re.match(r'^[0-9][A-Za-z0-9._-]*$', checkout_version):
-            raise ValueError(f'Package version contains unexpected characters: {checkout_version!r}')
-
-        repo_url = os.environ['PYPI_REPOSITORY_URL'].removesuffix('/')
-        # Use a list of arguments to avoid shell=True injection
-        result = subprocess.run(
-            ['python', '-m', 'pip', 'index', 'versions', name,
-             '--index-url', repo_url + '/simple',
-             '--keyring-provider', 'subprocess'],
-            shell=False, capture_output=True)
+        repo_url = os.environ['INPUT_PYPI_REPOSITORY_URL'].removesuffix('/')
+        result = subprocess.run(f'python -m pip index versions {name} --index-url {repo_url}/simple --keyring-provider subprocess',
+                                shell=True, capture_output=True)
         print('Got result: ', result)
         if result.returncode == 0:
             pypi_version = result.stdout.split(b'\n', 1)[0].split(b' ')[1][1:-1].decode('utf-8')
             pypi_version = vparse(pypi_version)
             new_version = str(vparse(checkout_version) > pypi_version).lower()
         else:
-            if result.stdout == b'' and os.environ['ALLOW_FIRST_RELEASE'] == 'true':
+            if result.stdout == b'' and os.environ['INPUT_ALLOW_FIRST_RELEASE'] == 'true':
                 pypi_version = '<new>'
                 new_version = True
             else:
                 raise RuntimeError('Something went wrong with getting the version from PyPI.')
-        github_output = os.environ['GITHUB_OUTPUT']
-        with open(github_output, 'a') as f:
-            f.write(f'name={name}\n')
-            f.write(f'tag=v{checkout_version}\n')
-            f.write(f'new-version={new_version}\n')
+        subprocess.run(f'echo name={name} >> \$GITHUB_OUTPUT', shell=True)
+        subprocess.run(f'echo tag=v{checkout_version} >> \$GITHUB_OUTPUT', shell=True)
+        subprocess.run(f'echo new-version={new_version} >> \$GITHUB_OUTPUT', shell=True)
         print(f'Got checkout_version={vparse(checkout_version)!r}')
         print(f'Got pypi_version={pypi_version!r}')
         print(f'Setting name={name}')
@@ -128,49 +115,47 @@ runs:
       if: steps.get-versions.outputs.new-version == 'true'
       shell: bash
       env:
-        TEST_SCRIPT: ${{ inputs.test-script }}
-        WORKSPACE: ${{ github.workspace }}
+        GITHUB_WORKSPACE_PATH: ${{ github.workspace }}
+        INPUT_TEST_SCRIPT: ${{ inputs.test-script }}
       run: |
         cd $(mktemp -d)
         python -m uv venv
-        python -m uv pip install "$WORKSPACE"/dist/*.tar.gz --target .venv/lib/*/site-packages/
+        python -m uv pip install "$GITHUB_WORKSPACE_PATH"/dist/*.tar.gz --target .venv/lib/*/site-packages/
         set +e
-        _test_script_file=$(mktemp --suffix=.sh)
-        printf '%s' "$TEST_SCRIPT" > "$_test_script_file"
-        bash "$_test_script_file"
+        _test_script_file=$(mktemp)
+        printf '%s\n' "$INPUT_TEST_SCRIPT" > "$_test_script_file"
+        bash -eo pipefail "$_test_script_file"
         if [ "$?" -eq 0 ]
         then
             echo result=true >> $GITHUB_OUTPUT
         else
             echo result=false >> $GITHUB_OUTPUT
         fi
-        rm -f "$_test_script_file"
         set -e
-        cd "$WORKSPACE"
+        cd "$GITHUB_WORKSPACE_PATH"
     - name: Test bdist_wheel
       id: test-bdist-wheel
       if: steps.get-versions.outputs.new-version == 'true'
       shell: bash
       env:
-        TEST_SCRIPT: ${{ inputs.test-script }}
-        WORKSPACE: ${{ github.workspace }}
+        GITHUB_WORKSPACE_PATH: ${{ github.workspace }}
+        INPUT_TEST_SCRIPT: ${{ inputs.test-script }}
       run: |
         cd $(mktemp -d)
         python -m uv venv
-        python -m uv pip install "$WORKSPACE"/dist/*.whl --target .venv/lib/*/site-packages/
+        python -m uv pip install "$GITHUB_WORKSPACE_PATH"/dist/*.whl --target .venv/lib/*/site-packages/
         set +e
-        _test_script_file=$(mktemp --suffix=.sh)
-        printf '%s' "$TEST_SCRIPT" > "$_test_script_file"
-        bash "$_test_script_file"
+        _test_script_file=$(mktemp)
+        printf '%s\n' "$INPUT_TEST_SCRIPT" > "$_test_script_file"
+        bash -eo pipefail "$_test_script_file"
         if [ "$?" -eq 0 ]
         then
             echo result=true >> $GITHUB_OUTPUT
         else
             echo result=false >> $GITHUB_OUTPUT
         fi
-        rm -f "$_test_script_file"
         set -e
-        cd "$WORKSPACE"
+        cd "$GITHUB_WORKSPACE_PATH"
     - name: Logging
       shell: bash
       env:
@@ -178,15 +163,15 @@ runs:
         SDIST_RESULT: ${{ steps.test-sdist.outputs.result }}
         BDIST_RESULT: ${{ steps.test-bdist-wheel.outputs.result }}
       run: |
-        echo new-version="$NEW_VERSION"
-        echo sdist-result="$SDIST_RESULT"
-        echo bdist-result="$BDIST_RESULT"
+        echo new-version=$NEW_VERSION
+        echo sdist-result=$SDIST_RESULT
+        echo bdist-result=$BDIST_RESULT
     - name: Push to PyPI
       if: (steps.get-versions.outputs.new-version == 'true') && (steps.test-sdist.outputs.result == 'true') && (steps.test-bdist-wheel.outputs.result == 'true')
       env:
         TWINE_USERNAME: ${{ inputs.pypi-user }}
         TWINE_PASSWORD: ${{ inputs.pypi-token }}
-        PYPI_REPOSITORY_URL: ${{ inputs.pypi-repository-url }}
+        INPUT_PYPI_REPOSITORY_URL: ${{ inputs.pypi-repository-url }}
       shell: bash
       # If I understand correctly then default PyPI is a bit weird in that it has a different upload URL.
       run: |
@@ -195,25 +180,25 @@ runs:
           unset TWINE_PASSWORD
         fi
         python -m pip install twine
-        if [ "$PYPI_REPOSITORY_URL" == "https://pypi.org/" ]; then
+        if [ "$INPUT_PYPI_REPOSITORY_URL" == "https://pypi.org/" ]; then
           export REPO_URL=https://upload.pypi.org/legacy/
         else
-          export REPO_URL="$PYPI_REPOSITORY_URL"
+          export REPO_URL="$INPUT_PYPI_REPOSITORY_URL"
         fi
         python -m twine upload --repository-url "$REPO_URL" --verbose --non-interactive dist/*
     - name: Tag
       if: (steps.get-versions.outputs.new-version == 'true') && (steps.test-sdist.outputs.result == 'true') && (steps.test-bdist-wheel.outputs.result == 'true')
       shell: bash
       env:
+        GIT_TAG: ${{ steps.get-versions.outputs.tag }}
         GITHUB_USER: ${{ inputs.github-user }}
         GITHUB_TOKEN_INPUT: ${{ inputs.github-token }}
-        GITHUB_REPOSITORY: ${{ github.repository }}
-        GIT_TAG: ${{ steps.get-versions.outputs.tag }}
+        GITHUB_REPOSITORY_NAME: ${{ github.repository }}
       run: |
         git config --global user.email "noreply@example.com"
         git config --global user.name "Action: Update Python project"
         git tag "$GIT_TAG" -m ""
-        git push "https://${GITHUB_USER}:${GITHUB_TOKEN_INPUT}@github.com/${GITHUB_REPOSITORY}" "$GIT_TAG"
+        git push "https://${GITHUB_USER}:${GITHUB_TOKEN_INPUT}@github.com/${GITHUB_REPOSITORY_NAME}" "$GIT_TAG"
     - name: GitHub release
       if: (steps.get-versions.outputs.new-version == 'true') && (steps.test-sdist.outputs.result == 'true') && (steps.test-bdist-wheel.outputs.result == 'true')
       uses: chainguard-actions/softprops-action-gh-release@008d986dff0405b1fa98d7b5ccaa8361e486972a # v1
