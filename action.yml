@@ -86,16 +86,18 @@ runs:
     - name: Test sdist
       id: test-sdist
       if: steps.get-versions.outputs.new-version == 'true'
-      env:
-        GITHUB_WORKSPACE_PATH: ${{ github.workspace }}
-        INPUT_TEST_SCRIPT: ${{ inputs.test-script }}
       shell: bash
+      env:
+        WORKSPACE: ${{ github.workspace }}
+        TEST_SCRIPT: ${{ inputs.test-script }}
       run: |
         cd $(mktemp -d)
         python -m uv venv
-        python -m uv pip install "$GITHUB_WORKSPACE_PATH"/dist/*.tar.gz --target .venv/lib/*/site-packages/
+        python -m uv pip install "$WORKSPACE"/dist/*.tar.gz --target .venv/lib/*/site-packages/
         set +e
-        bash -c "$INPUT_TEST_SCRIPT"
+        _test_script_file=$(mktemp)
+        printf '%s\n' "$TEST_SCRIPT" > "$_test_script_file"
+        bash -eo pipefail "$_test_script_file"
         if [ "$?" -eq 0 ]
         then
             echo result=true >> $GITHUB_OUTPUT
@@ -103,20 +105,22 @@ runs:
             echo result=false >> $GITHUB_OUTPUT
         fi
         set -e
-        cd "$GITHUB_WORKSPACE_PATH"
+        cd "$WORKSPACE"
     - name: Test bdist_wheel
       id: test-bdist-wheel
       if: steps.get-versions.outputs.new-version == 'true'
-      env:
-        GITHUB_WORKSPACE_PATH: ${{ github.workspace }}
-        INPUT_TEST_SCRIPT: ${{ inputs.test-script }}
       shell: bash
+      env:
+        WORKSPACE: ${{ github.workspace }}
+        TEST_SCRIPT: ${{ inputs.test-script }}
       run: |
         cd $(mktemp -d)
         python -m uv venv
-        python -m uv pip install "$GITHUB_WORKSPACE_PATH"/dist/*.whl --target .venv/lib/*/site-packages/
+        python -m uv pip install "$WORKSPACE"/dist/*.whl --target .venv/lib/*/site-packages/
         set +e
-        bash -c "$INPUT_TEST_SCRIPT"
+        _test_script_file=$(mktemp)
+        printf '%s\n' "$TEST_SCRIPT" > "$_test_script_file"
+        bash -eo pipefail "$_test_script_file"
         if [ "$?" -eq 0 ]
         then
             echo result=true >> $GITHUB_OUTPUT
@@ -124,17 +128,17 @@ runs:
             echo result=false >> $GITHUB_OUTPUT
         fi
         set -e
-        cd "$GITHUB_WORKSPACE_PATH"
+        cd "$WORKSPACE"
     - name: Logging
+      shell: bash
       env:
         NEW_VERSION: ${{ steps.get-versions.outputs.new-version }}
         SDIST_RESULT: ${{ steps.test-sdist.outputs.result }}
         BDIST_RESULT: ${{ steps.test-bdist-wheel.outputs.result }}
-      shell: bash
       run: |
-        echo "new-version=$NEW_VERSION"
-        echo "sdist-result=$SDIST_RESULT"
-        echo "bdist-result=$BDIST_RESULT"
+        echo new-version="$NEW_VERSION"
+        echo sdist-result="$SDIST_RESULT"
+        echo bdist-result="$BDIST_RESULT"
     - name: Push to PyPI
       if: (steps.get-versions.outputs.new-version == 'true') && (steps.test-sdist.outputs.result == 'true') && (steps.test-bdist-wheel.outputs.result == 'true')
       env:
@@ -146,17 +150,17 @@ runs:
         python -m twine upload dist/*
     - name: Tag
       if: (steps.get-versions.outputs.new-version == 'true') && (steps.test-sdist.outputs.result == 'true') && (steps.test-bdist-wheel.outputs.result == 'true')
-      env:
-        GITHUB_USER: ${{ inputs.github-user }}
-        GITHUB_TOKEN_VALUE: ${{ inputs.github-token }}
-        GITHUB_REPOSITORY_VALUE: ${{ github.repository }}
-        GIT_TAG: ${{ steps.get-versions.outputs.tag }}
       shell: bash
+      env:
+        GIT_TAG: ${{ steps.get-versions.outputs.tag }}
+        GITHUB_USER: ${{ inputs.github-user }}
+        GITHUB_TOKEN_INPUT: ${{ inputs.github-token }}
+        GITHUB_REPOSITORY_NAME: ${{ github.repository }}
       run: |
         git config --global user.email "noreply@example.com"
         git config --global user.name "Action: Update Python project"
         git tag "$GIT_TAG" -m ""
-        git push "https://${GITHUB_USER}:${GITHUB_TOKEN_VALUE}@github.com/${GITHUB_REPOSITORY_VALUE}" "$GIT_TAG"
+        git push "https://${GITHUB_USER}:${GITHUB_TOKEN_INPUT}@github.com/${GITHUB_REPOSITORY_NAME}" "$GIT_TAG"
     - name: GitHub release
       if: (steps.get-versions.outputs.new-version == 'true') && (steps.test-sdist.outputs.result == 'true') && (steps.test-bdist-wheel.outputs.result == 'true')
       uses: chainguard-actions/softprops-action-gh-release@008d986dff0405b1fa98d7b5ccaa8361e486972a # v1
