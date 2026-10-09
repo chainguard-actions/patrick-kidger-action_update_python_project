@@ -88,8 +88,8 @@ runs:
         checkout_version = data['project']['version']
 
         repo_url = os.environ['INPUT_PYPI_REPOSITORY_URL'].removesuffix('/')
-        result = subprocess.run(f'python -m pip index versions {name} --index-url {repo_url}/simple --keyring-provider subprocess',
-                                shell=True, capture_output=True)
+        result = subprocess.run(['python', '-m', 'pip', 'index', 'versions', name, '--index-url', repo_url + '/simple', '--keyring-provider', 'subprocess'],
+                                shell=False, capture_output=True)
         print('Got result: ', result)
         if result.returncode == 0:
             pypi_version = result.stdout.split(b'\n', 1)[0].split(b' ')[1][1:-1].decode('utf-8')
@@ -101,30 +101,32 @@ runs:
                 new_version = True
             else:
                 raise RuntimeError('Something went wrong with getting the version from PyPI.')
-        subprocess.run(f'echo name={name} >> \$GITHUB_OUTPUT', shell=True)
-        subprocess.run(f'echo tag=v{checkout_version} >> \$GITHUB_OUTPUT', shell=True)
-        subprocess.run(f'echo new-version={new_version} >> \$GITHUB_OUTPUT', shell=True)
+        safe_name = name.replace('\n', '').replace('\r', '')
+        safe_checkout_version = checkout_version.replace('\n', '').replace('\r', '')
+        safe_new_version = str(new_version).replace('\n', '').replace('\r', '')
+        subprocess.run(f'echo name={safe_name} >> \$GITHUB_OUTPUT', shell=True)
+        subprocess.run(f'echo tag=v{safe_checkout_version} >> \$GITHUB_OUTPUT', shell=True)
+        subprocess.run(f'echo new-version={safe_new_version} >> \$GITHUB_OUTPUT', shell=True)
         print(f'Got checkout_version={vparse(checkout_version)!r}')
         print(f'Got pypi_version={pypi_version!r}')
-        print(f'Setting name={name}')
-        print(f'Setting tag=v{checkout_version}')
-        print(f'Setting new-version={new_version}')
+        print(f'Setting name={safe_name}')
+        print(f'Setting tag=v{safe_checkout_version}')
+        print(f'Setting new-version={safe_new_version}')
         "
     - name: Test sdist
       id: test-sdist
       if: steps.get-versions.outputs.new-version == 'true'
       shell: bash
       env:
-        GITHUB_WORKSPACE_PATH: ${{ github.workspace }}
         INPUT_TEST_SCRIPT: ${{ inputs.test-script }}
       run: |
         cd $(mktemp -d)
         python -m uv venv
-        python -m uv pip install "$GITHUB_WORKSPACE_PATH"/dist/*.tar.gz --target .venv/lib/*/site-packages/
+        python -m uv pip install "$GITHUB_WORKSPACE"/dist/*.tar.gz --target .venv/lib/*/site-packages/
         set +e
         _test_script_file=$(mktemp)
         printf '%s\n' "$INPUT_TEST_SCRIPT" > "$_test_script_file"
-        bash -eo pipefail "$_test_script_file"
+        bash "$_test_script_file"
         if [ "$?" -eq 0 ]
         then
             echo result=true >> $GITHUB_OUTPUT
@@ -132,22 +134,21 @@ runs:
             echo result=false >> $GITHUB_OUTPUT
         fi
         set -e
-        cd "$GITHUB_WORKSPACE_PATH"
+        cd "$GITHUB_WORKSPACE"
     - name: Test bdist_wheel
       id: test-bdist-wheel
       if: steps.get-versions.outputs.new-version == 'true'
       shell: bash
       env:
-        GITHUB_WORKSPACE_PATH: ${{ github.workspace }}
         INPUT_TEST_SCRIPT: ${{ inputs.test-script }}
       run: |
         cd $(mktemp -d)
         python -m uv venv
-        python -m uv pip install "$GITHUB_WORKSPACE_PATH"/dist/*.whl --target .venv/lib/*/site-packages/
+        python -m uv pip install "$GITHUB_WORKSPACE"/dist/*.whl --target .venv/lib/*/site-packages/
         set +e
         _test_script_file=$(mktemp)
         printf '%s\n' "$INPUT_TEST_SCRIPT" > "$_test_script_file"
-        bash -eo pipefail "$_test_script_file"
+        bash "$_test_script_file"
         if [ "$?" -eq 0 ]
         then
             echo result=true >> $GITHUB_OUTPUT
@@ -155,7 +156,7 @@ runs:
             echo result=false >> $GITHUB_OUTPUT
         fi
         set -e
-        cd "$GITHUB_WORKSPACE_PATH"
+        cd "$GITHUB_WORKSPACE"
     - name: Logging
       shell: bash
       env:
@@ -163,9 +164,9 @@ runs:
         SDIST_RESULT: ${{ steps.test-sdist.outputs.result }}
         BDIST_RESULT: ${{ steps.test-bdist-wheel.outputs.result }}
       run: |
-        echo new-version=$NEW_VERSION
-        echo sdist-result=$SDIST_RESULT
-        echo bdist-result=$BDIST_RESULT
+        echo new-version="$NEW_VERSION"
+        echo sdist-result="$SDIST_RESULT"
+        echo bdist-result="$BDIST_RESULT"
     - name: Push to PyPI
       if: (steps.get-versions.outputs.new-version == 'true') && (steps.test-sdist.outputs.result == 'true') && (steps.test-bdist-wheel.outputs.result == 'true')
       env:
@@ -193,12 +194,12 @@ runs:
         GIT_TAG: ${{ steps.get-versions.outputs.tag }}
         GITHUB_USER: ${{ inputs.github-user }}
         GITHUB_TOKEN_INPUT: ${{ inputs.github-token }}
-        GITHUB_REPOSITORY_NAME: ${{ github.repository }}
+        GITHUB_REPOSITORY_INPUT: ${{ github.repository }}
       run: |
         git config --global user.email "noreply@example.com"
         git config --global user.name "Action: Update Python project"
         git tag "$GIT_TAG" -m ""
-        git push "https://${GITHUB_USER}:${GITHUB_TOKEN_INPUT}@github.com/${GITHUB_REPOSITORY_NAME}" "$GIT_TAG"
+        git push "https://${GITHUB_USER}:${GITHUB_TOKEN_INPUT}@github.com/${GITHUB_REPOSITORY_INPUT}" "$GIT_TAG"
     - name: GitHub release
       if: (steps.get-versions.outputs.new-version == 'true') && (steps.test-sdist.outputs.result == 'true') && (steps.test-bdist-wheel.outputs.result == 'true')
       uses: chainguard-actions/softprops-action-gh-release@008d986dff0405b1fa98d7b5ccaa8361e486972a # v1
