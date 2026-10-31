@@ -6,10 +6,10 @@ Hardened by [Chainguard](https://www.chainguard.dev) from the upstream action at
 
 ## Versions
 
-| Version | Tag | Upstream commit |
-|---------|-----|-----------------|
-| v7 | [`v7`](https://github.com/chainguard-actions/patrick-kidger-action_update_python_project/tree/v7) | [`df5970a`](https://github.com/patrick-kidger/action_update_python_project/commit/df5970aaeffe81bb11a0f7f099a08ca562a99f8d) |
-| v8 | [`v8`](https://github.com/chainguard-actions/patrick-kidger-action_update_python_project/tree/v8) | [`f2c820c`](https://github.com/patrick-kidger/action_update_python_project/commit/f2c820c1af8f6304ac818b29285c73044955f28d) |
+| Version | Tag | Upstream commit | Hardening report |
+|---------|-----|-----------------|------------------|
+| v7 | [`v7`](https://github.com/chainguard-actions/patrick-kidger-action_update_python_project/tree/v7) | [`df5970a`](https://github.com/patrick-kidger/action_update_python_project/commit/df5970aaeffe81bb11a0f7f099a08ca562a99f8d) | [`HARDENING.md`](https://github.com/chainguard-actions/patrick-kidger-action_update_python_project/blob/v7/HARDENING.md) |
+| v8 | [`v8`](https://github.com/chainguard-actions/patrick-kidger-action_update_python_project/tree/v8) | [`f2c820c`](https://github.com/patrick-kidger/action_update_python_project/commit/f2c820c1af8f6304ac818b29285c73044955f28d) | [`HARDENING.md`](https://github.com/chainguard-actions/patrick-kidger-action_update_python_project/blob/v8/HARDENING.md) |
 
 ## Privacy
 
