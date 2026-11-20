@@ -4,61 +4,71 @@
 
 > This file was generated automatically by the hardening agent.
 
-**Policy SHA:** `d636be7e43ef829af6e853da6b3c7566db9f72fe`
+**Policy SHA:** `374911c4be584df24e6da57af2d990570ef0f859`
 
 **Test Policy SHA:** `843adf9e4b8f85d0c08b27b9d0b09dd094b54702`
 
 **Harden Agent Version:** `2`
 
-Action **patrick-kidger--action_update_python_project/v7** was hardened automatically. 7 finding(s) were identified and resolved across 4 iteration(s).
+Action **patrick-kidger--action_update_python_project/v7** was hardened automatically. 11 finding(s) were identified and resolved across 1 iteration(s).
 
 ## Findings Fixed
 
 ### unpinned-uses (severity: high)
 
-Three `uses:` references in action.yml use mutable tag refs instead of pinned 40-character commit SHAs, making the action vulnerable to supply-chain attacks if those tags are moved:
-- `actions/checkout@v2` (line 27)
-- `actions/setup-python@v2` (line 30)
-- `softprops/action-gh-release@v1` (line 131)
-Each should be replaced with a full SHA digest, e.g. `actions/checkout@<40-char-sha> # v2`.
+action.yml has composite steps whose uses: refs are mutable tags, not 40-character commit SHAs: 'uses: actions/checkout@v2' (line 30), 'uses: actions/setup-python@v2' (line 33), 'uses: softprops/action-gh-release@v1' (line 143).
 
 Locations:
 
-- `action.yml:27`
 - `action.yml:30`
-- `action.yml:131`
+- `action.yml:33`
+- `action.yml:143`
 
 ### script-injection (severity: high)
 
-Multiple `run:` blocks in action.yml directly interpolate `${{ ... }}` expressions into shell commands (sub-rule a), allowing script injection:
-
-1. **"Test sdist" step (~line 83)**: `${{ inputs.test-script }}` is interpolated directly inside `bash -c "..."` — an attacker-controlled input is executed as arbitrary shell code. Also `${{ github.workspace }}` is interpolated unquoted in a path argument.
-
-2. **"Test bdist_wheel" step (~line 98)**: Same patterns — `${{ inputs.test-script }}` inside `bash -c "..."` and `${{ github.workspace }}` unquoted.
-
-3. **"Logging" step (~line 113)**: `${{ steps.get-versions.outputs.new-version }}`, `${{ steps.test-sdist.outputs.result }}`, and `${{ steps.test-bdist-wheel.outputs.result }}` are interpolated directly into `echo` commands.
-
-4. **"Tag" step (~line 120)**: `${{ steps.get-versions.outputs.tag }}`, `${{ inputs.github-user }}`, `${{ inputs.github-token }}`, and `${{ github.repository }}` are all interpolated directly into `git tag` and `git push` commands. Injecting a crafted tag value or username could allow arbitrary command execution.
+Rule (a), step 'Test sdist': a ${{ }} expression is placed directly in the run: script. 'python -m uv pip install ${{ github.workspace }}/dist/*.tar.gz ...' (line 80), 'bash -c " ${{ inputs.test-script }} "' (line 83) and 'cd ${{ github.workspace }}' (line 92). Line 92 is also unquoted. inputs.test-script is substituted into the shell text before bash runs.
 
 Locations:
 
+- `action.yml:80`
 - `action.yml:83`
-- `action.yml:88`
-- `action.yml:98`
-- `action.yml:103`
+- `action.yml:92`
+
+### script-injection (severity: high)
+
+Rule (a), step 'Test bdist_wheel': a ${{ }} expression is placed directly in the run: script. 'python -m uv pip install ${{ github.workspace }}/dist/*.whl ...' (line 101), 'bash -c " ${{ inputs.test-script }} "' (line 104) and 'cd ${{ github.workspace }}' (line 113).
+
+Locations:
+
+- `action.yml:101`
+- `action.yml:104`
 - `action.yml:113`
-- `action.yml:120`
-- `action.yml:123`
+
+### script-injection (severity: high)
+
+Rule (a), step 'Logging': unquoted step outputs are placed directly in the run: script. 'echo new-version=${{ steps.get-versions.outputs.new-version }}' (line 118), 'echo sdist-result=${{ steps.test-sdist.outputs.result }}' (line 119) and 'echo bdist-result=${{ steps.test-bdist-wheel.outputs.result }}' (line 120).
+
+Locations:
+
+- `action.yml:118`
+
+### script-injection (severity: high)
+
+Rule (a), step 'Tag': expressions are placed directly in the run: script. 'git tag "${{ steps.get-versions.outputs.tag }}" -m ""' (line 138) and 'git push https://${{ inputs.github-user }}:${{ inputs.github-token }}@github.com/${{ github.repository }} "${{ steps.get-versions.outputs.tag }}"' (line 139). The tag value comes from pyproject.toml in the repository, so it is attacker-controllable.
+
+Locations:
+
+- `action.yml:138`
+- `action.yml:139`
 
 ### github-env-injection (severity: high)
 
-The **"Get versions" step** writes values derived from the repository's `pyproject.toml` (project `name` and `checkout_version`) directly to `$GITHUB_OUTPUT` via Python `subprocess.run(f'echo name={name} >> $GITHUB_OUTPUT', shell=True)` and similar calls, without any newline sanitization (`printf '%s' ... | tr -d '\n\r'`). If `pyproject.toml` contains a crafted `name` or `version` field with embedded newlines, an attacker who controls the repository content could inject arbitrary key=value pairs into `$GITHUB_OUTPUT`, potentially overwriting subsequent step outputs and influencing downstream conditional logic.
+Step 'Get versions' writes values to $GITHUB_OUTPUT without stripping newlines. The project name and version are read from the checked-out pyproject.toml, which a PR can change. They are written with subprocess.run(f'echo name={name} >> $GITHUB_OUTPUT', shell=True) and f'echo tag=v{checkout_version} >> $GITHUB_OUTPUT' (lines 63-64). No printf '%s' | tr -d '\n\r' step runs first, so extra output keys can be injected. Because shell=True is used, these values are also parsed by a shell.
 
 Locations:
 
-- `action.yml:57`
-- `action.yml:58`
-- `action.yml:59`
+- `action.yml:63`
+- `action.yml:64`
 
 ### static-inline-injection (severity: high)
 
@@ -92,41 +102,148 @@ Locations:
 
 - `action.yml:139`
 
+### prior-fix (severity: high)
+
+Carried forward from this version's previous harden, which fixed it; fix it again unless the code no longer has the problem. The previous harden changed action.yml without recording a finding for it, and this analysis reported nothing there. Re-apply its security changes unless the code no longer needs them. The previous patch:
+```diff
+diff --git a/action.yml b/action.yml
+index d3f746d..1e8f3bf 100644
+--- a/action.yml
++++ b/action.yml
+@@ -2,153 +2,182 @@ name: 'Update Python project: Check version / Test / git tag / GitHub Release /
+ author: 'Patrick Kidger'
+ description: 'Builds a Python projects, runs tests, and if successful tags and uploads to PyPI'
+ inputs:
+-    python-version:
+-        description: 'The version of Python to use.'
+-        required: true
+-    pypi-user:
+-        description: 'Your username on PyPI.'
+-        default: '__token__'
+-    pypi-token:
+-        description: 'A PyPI password or authentication token for your project.'
+-        required: true
+-    github-user:
+-        description: 'Your username on GitHub.'
+-        required: true
+-    github-token:
+-        description: 'A GitHub authentication token for your project.'
+-        required: true
+-    test-script:
+-        description: 'The script for the tests.'
+-        required: true
++  python-version:
++    description: 'The version of Python to use.'
++    required: true
++  pypi-user:
++    description: 'Your username on PyPI.'
++    default: '__token__'
++  pypi-token:
++    description: 'A PyPI password or authentication token for your project.'
++    required: true
++  github-user:
++    description: 'Your username on GitHub.'
++    required: true
++  github-token:
++    description: 'A GitHub authentication token for your project.'
++    required: true
++  test-script:
++    description: 'The script for the tests.'
++    required: true
+ branding:
+-    icon: 'wind'
+-    color: 'yellow'
++  icon: 'wind'
++  color: 'yellow'
+ runs:
+-    using: "composite"
+-    steps:
+-        - name: Checkout code
+           uses: actions/checkout@v2
++  using: "composite"
++  steps:
++    - name: Checkout code
++    - name: Set up Python ${{ inputs.python-version }}
++      uses: chainguard-actions/actions-setup-python@c1869dcf3733fc23f862a7b6ebb625aba29b87e2 # v2
++      with:
++        python-version: ${{ inputs.python-version }}
++    - name: Setup
++      shell: bash
++      run: |
++        python -m pip install --upgrade pip
++        python -m pip install build uv
++        python -m build
++    - name: Get versions
++      id: get-versions
++      shell: bash
++      run: |
++        python -c "
++        import subprocess
++        import tomllib
+ 
+-        - name: Set up Python ${{ inputs.python-version }}
+-          uses: actions/setup-python@v2
+-          with:
+-              python-version: ${{ inputs.python-version }}
++        vparse = lambda x: tuple(map(int, x.split('.')))
+ 
+-        - name: Setup
+-          shell: bash
+-          run: |
+-              python -m pip install --upgrade pip
+-              python -m pip install build uv
+-              python -m build
++        with open('pyproject.toml', 'rb') as f:
++            data = tomllib.load(f)
++        name = data['project']['name']
++        checkout_version = data['project']['version']
+ 
+-        - name: Get versions
+-          id: get-versions
+-          shell: bash
+-          run: |
+-              python -c "
+-              import subprocess
+-              import tomllib
++        pypi_version = subprocess.run(f'python -m pip index versions {name}',
++                                      shell=True, capture_output=True).stdout
++        pypi_version = pypi_version.split(b'\n', 1)[0].split(b' ')[1][1:-1].decode('utf-8')
++        new_version = str(vparse(checkout_version) > vparse(pypi_version)).lower()
+ 
+-              vparse = lambda x: tuple(map(int, x.split('.')))
++        def safe(val):
++            return val.replace('\n', '').replace('\r', '')
+ 
+-              with open('pyproject.toml', 'rb') as f:
+-                  data = tomllib.load(f)
+-              name = data['project']['name']
+-              checkout_version = data['project']['version']
+-
+-              pypi_version = subprocess.run(f'python -m pip index versions {name}',
+-                                            shell=True, capture_output=True).stdout
+-              pypi_version = pypi_version.split(b'\n', 1)[0].split(b' ')[1][1:-1].decode('utf-8')
+-              new_version = str(vpars
+... (truncated)
+```
+
+Locations:
+
+- `action.yml`
+
 ## Iteration Notes
 
 ### Iteration 1
 
-**Fixes applied:** unpinned-uses, script-injection, github-env-injection, static-inline-injection
+**Fixes applied:** unpinned-uses, script-injection, github-env-injection, static-inline-injection, prior-fix
 
 **Notes:**
 
-Fixed all findings in action.yml:
-1. Pinned actions/checkout@v2, actions/setup-python@v2, and softprops/action-gh-release@v1 to full 40-char commit SHAs.
-2. Moved all ${{ }} expressions from run: blocks into env: maps for Test sdist, Test bdist_wheel, Logging, and Tag steps.
-3. Fixed github-env-injection in the Get versions step: replaced subprocess.run('echo ... >> $GITHUB_OUTPUT', shell=True) with direct Python file writes using a safe() function that strips newlines/carriage returns from values before writing to $GITHUB_OUTPUT.
-4. Preserved upstream behavior: test-script runs via bash -c without -e (no errexit), matching upstream's intentional design where $? is captured manually.
-
-### Iteration 2
-
-**Fixes applied:** script-injection
-
-**Notes:**
-
-Fixed two script injection findings in action.yml. In both 'Test sdist' (line 76) and 'Test bdist_wheel' (line 94) steps, the unquoted `$TEST_SCRIPT` expansion inside `bash -c` was replaced with properly double-quoted `bash -c "$TEST_SCRIPT"`. The multi-line heredoc-style expansion (`bash -c "\n              $TEST_SCRIPT\n              "`) was also collapsed to a single-line form. The fix preserves upstream's intentional use of `bash -c` without `-e` (no errexit), since the test-script step uses `set +e` and captures the exit code manually.
-
-### Iteration 3
-
-**Fixes applied:** script-injection
-
-**Notes:**
-
-Fixed script injection in both 'Test sdist' (line 73) and 'Test bdist_wheel' (line 89) steps. Replaced `bash -c "$TEST_SCRIPT"` with writing `$TEST_SCRIPT` to a temp file via `printf '%s\n' "$TEST_SCRIPT" > "$_script_file"` and executing it with `bash "$_script_file"`. This prevents the shell from interpreting the input value as inline shell code. The fix preserves upstream's behavior: no `-e` flag is used (matching the `set +e` context upstream used), and the exit code is still captured for the result output. Temp files are cleaned up with `rm -f` after use.
-
-### Iteration 4
-
-**Fixes applied:** script-injection
-
-**Notes:**
-
-Fixed the script injection finding in the 'Logging' step of action.yml (lines 136-138). The three echo statements that expanded unquoted variables ($NEW_VERSION, $SDIST_RESULT, $BDIST_RESULT) were updated to use double-quoted strings: `echo "new-version=$NEW_VERSION"`, `echo "sdist-result=$SDIST_RESULT"`, and `echo "bdist-result=$BDIST_RESULT"`. The variables were already correctly sourced from the env: block (populated from steps.*.outputs.* expressions) in a prior iteration; this iteration adds the missing double-quotes to prevent shell metacharacter injection.
+Hardened action.yml. Changes were not run or tested.
+- Pinned actions/checkout v2 (0717577d45739eb3c851188b29f50ed6c0b2194e), actions/setup-python v2 (e9aba2c848f5ebd159c070c61ea2c4e2b122355e) and softprops/action-gh-release v1 (de2c0eb89ae2a093876385947365aca7b0e5f844), with the tag kept in a comment. The previous harden used a chainguard-actions mirror for setup-python; this pass uses the upstream repos.
+- Test sdist / Test bdist_wheel: github.workspace and inputs.test-script moved to env (WORKSPACE_DIR, TEST_SCRIPT). The test runs as bash -c "$TEST_SCRIPT" after set +e, without -e, matching upstream. cd paths and $GITHUB_OUTPUT are quoted; the dist/* glob stays outside the quotes.
+- Logging: step outputs moved to env and echoed quoted.
+- Tag: tag, github-user, github-token and repository moved to env; git tag and git push use only quoted variables.
+- Get versions: Python writes name/tag/new-version straight to the GITHUB_OUTPUT file through safe(), which strips \n and \r, instead of subprocess shell=True echo. pip index versions now gets a list of arguments without shell=True.
+- Left as is: 4-space indentation, and the release step's with: inputs (not run by a shell).
+- Behaviour changes: $VARs in the test script are now expanded by the inner bash -c rather than the outer shell, so a script relying on the outer shell's expansion or quoting could act a little differently. A name or version with spaces or shell characters is now written as-is (minus newlines) instead of being mangled by echo.
 
